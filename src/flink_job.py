@@ -16,9 +16,10 @@ from pyflink.table import StreamTableEnvironment, Schema, DataTypes
 
 
 KAFKA_BOOTSTRAP_SERVERS = "localhost:9092"
-INPUT_TOPIC = "iot_events"
-OUTPUT_TOPIC = "iot_aggregates"
+INPUT_TOPIC = "iot_events" #входной потом с событиями от IoT-устройств
+OUTPUT_TOPIC = "iot_aggregates" #итоговые агрегаты по минутным окнам
 
+#здесь просто параметры для подключения к PostgresSQL
 POSTGRES_HOST = "localhost"
 POSTGRES_PORT = 5432
 POSTGRES_DB = "iot_db"
@@ -27,6 +28,10 @@ POSTGRES_PASSWORD = "iot_password"
 
 
 def add_connector_jars(env, t_env):
+    """
+    У меня были пооблемы с внешними jar-коннекторами, так что это фукнкция, 
+    которая добавляет их в окружение Flink
+    """
     jar_paths = glob.glob(os.path.abspath("jars/*.jar"))
 
     if not jar_paths:
@@ -39,6 +44,11 @@ def add_connector_jars(env, t_env):
 
 
 def load_device_types_from_postgres():
+    """
+    Функция для загрузки справочника типов устройств из PostgresSQL.
+    На выходе получаем словарь device_type_id - type_name.
+    Например, 1 - temperature_sensor.
+    """
     conn = psycopg2.connect(
         host=POSTGRES_HOST,
         port=POSTGRES_PORT,
@@ -57,6 +67,13 @@ def load_device_types_from_postgres():
 
 
 def parse_iot_event(raw_message):
+    """
+    Функция для парсинга одного Kafka-сообщения из JSON в Row.
+    В Kafka событие приходит строкой, поэтому сначала делаем json.loads(),
+    затем приводим поля к нужным типам.
+    event_time переводится в timestamp в миллисекундах, потому что дальше
+    мы используем его как event time для watermarks и окон.
+    """
     try:
         data = json.loads(raw_message)
 
@@ -79,6 +96,11 @@ def parse_iot_event(raw_message):
 
 
 def enrich_event(row, device_types):
+    """
+    Обогащает событие названием типа устройства.
+    Во входном событии есть только device_type_id,
+    по этому id берём type_name из справочника PostgreSQL.
+    """
     device_type_id = row[1]
     type_name = device_types.get(device_type_id, "unknown_device_type")
 
@@ -91,11 +113,22 @@ def enrich_event(row, device_types):
 
 
 class IotTimestampAssigner(TimestampAssigner):
+    """
+    Класс для извлечения event time из события.
+    Flink будет использовать поле event_time_ms как timestamp события,
+    а не время обработки записи.
+    """
     def extract_timestamp(self, value, record_timestamp):
         return value[1]
 
 
 class AvgTempMedianHumidityWindow(ProcessWindowFunction):
+    """
+    Оконная функция для расчёта агрегатов.
+    Для каждого минутного окна и каждого типа устройства считаются:
+    - средняя температура;
+    - медиана влажности.
+    """
     def process(self, key, context, elements):
         rows = list(elements)
 
@@ -107,6 +140,8 @@ class AvgTempMedianHumidityWindow(ProcessWindowFunction):
 
         avg_temperature = sum(temperatures) / len(temperatures)
 
+        #Медиану считаем вручную, потому что в используемой версии Flink SQL
+        #функции PERCENTILE / PERCENTILE_CONT не поддерживались
         n = len(humidities)
         if n % 2 == 1:
             median_humidity = humidities[n // 2]
@@ -135,6 +170,7 @@ class AvgTempMedianHumidityWindow(ProcessWindowFunction):
 
 
 def main():
+     #Создаём Flink-окружение
     conf = Configuration()
     conf.set_integer("rest.port", 8081)
 
@@ -144,10 +180,12 @@ def main():
     t_env = StreamTableEnvironment.create(env)
 
     add_connector_jars(env, t_env)
-
+    
+    #Загружаем справочник из PostgreSQL один раз
     device_types = load_device_types_from_postgres()
     print(f"Loaded device types from Postgres: {device_types}")
-
+    
+    #Описываем Kafka source для чтения входных IoT-событий
     kafka_source = (
         KafkaSource.builder()
         .set_bootstrap_servers(KAFKA_BOOTSTRAP_SERVERS)
@@ -164,6 +202,7 @@ def main():
         source_name="Kafka iot_events source",
     )
 
+    #Парсим JSON-сообщения из Kafka и отбрасываем некорректные записи
     events_ds = (
         raw_ds
         .map(
@@ -176,6 +215,7 @@ def main():
         .filter(lambda x: x is not None)
     )
 
+    #Добавляем к событию название типа устройства из PostgreSQL-справочника
     enriched_ds = events_ds.map(
         lambda row: enrich_event(row, device_types),
         output_type=Types.ROW_NAMED(
@@ -184,6 +224,8 @@ def main():
         ),
     )
 
+    #Настраиваем event time и watermarks
+    #Допускаем, что события могут прийти с опозданием до 5 секунд
     watermark_strategy = (
         WatermarkStrategy
         .for_bounded_out_of_orderness(Duration.of_seconds(5))
@@ -193,7 +235,8 @@ def main():
     enriched_with_watermarks = enriched_ds.assign_timestamps_and_watermarks(
         watermark_strategy
     )
-
+    
+    #Группируем события по типу устройства и считаем агрегаты
     aggregates_ds = (
         enriched_with_watermarks
         .key_by(lambda row: row[0])
@@ -207,6 +250,8 @@ def main():
         )
     )
 
+    #Переводим результат из DataStream в Table
+    #Это нужно, чтобы дальше записать результат в Kafka через SQL/Table API
     aggregates_table = t_env.from_data_stream(
         aggregates_ds,
         Schema.new_builder()
@@ -219,7 +264,9 @@ def main():
     )
 
     t_env.create_temporary_view("iot_aggregates_view", aggregates_table)
-
+    
+    #Создаём Kafka sink через Table/SQL API.
+    #Итоговые агрегаты будут записываться в iot_aggregates в JSON-формате
     t_env.execute_sql(
         f"""
         CREATE TABLE iot_aggregates_sink (
@@ -238,6 +285,7 @@ def main():
         """
     )
 
+    #Запускаем запись результата из временного вью в Kafka sink
     result = t_env.execute_sql(
         """
         INSERT INTO iot_aggregates_sink
@@ -254,7 +302,6 @@ def main():
     print("Flink job started.")
     print(f"Input Kafka topic: {INPUT_TOPIC}")
     print(f"Output Kafka topic: {OUTPUT_TOPIC}")
-    print("Press Ctrl+C to stop.")
     result.wait()
 
 
