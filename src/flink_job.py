@@ -14,8 +14,6 @@
    через SQL/Table API.
 """
 
-
-
 import glob
 import json
 import os
