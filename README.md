@@ -119,12 +119,6 @@ PIP_CONSTRAINT=constraints.txt pip install apache-flink==1.20.0
 conda install -c conda-forge openjdk=17 -y
 ```
 
-Проверка:
-
-```bash
-java -version
-```
-
 ### 4. Запустить инфраструктуру
 
 ```bash
@@ -227,5 +221,3 @@ local-iot-kafka -> Topics -> iot_aggregates -> Messages
 Таким образом, в проекте был реализован пайплайн для обработки IoT-событий. Генератор отправляет данные в Kafka, PyFlink job читает этот поток, обогащает события справочником из PostgreSQL и считает агрегаты по минутным окнам.
 
 В результате для каждого типа устройства рассчитываются средняя температура и медиана влажности, после чего итоговые данные записываются обратно в Kafka в topic `iot_aggregates`.
-
-В проекте также были использованы основные элементы, которые требовались в задании: Kafka source/sink, PostgreSQL-справочник, event time, watermarks, tumbling windows, DataStream API и переход из DataStream в Table API для записи результата.
