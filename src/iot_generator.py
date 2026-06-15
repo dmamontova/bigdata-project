@@ -1,3 +1,12 @@
+"""
+Скрипт для генерации тестовых IoT-событий.
+
+Что делает скрипт:
+1. Раз в секунду генерирует случайное событие от IoT-устройства.
+2. Событие содержит device_id, device_type_id, event_time, temperature и humidity.
+3. Отправляет событие в Kafka топик `iot_events` в JSON-формате.
+"""
+
 import json
 import random
 import time
@@ -5,15 +14,25 @@ from datetime import datetime, timezone
 
 from confluent_kafka import Producer
 
-
+#Kafka топик, куда отправляются сырые IoT-события
 KAFKA_BOOTSTRAP_SERVERS = "localhost:9092"
 TOPIC_NAME = "iot_events"
 
+#Возможные типы устройств
+#Эти id должны совпадать с id в PostgreSQL-справочнике device_types
 DEVICE_TYPES = [1, 2, 3, 4, 5]
+
+#Список тестовых устройств
+#У одного типа устройства может быть несколько конкретных device_id
 DEVICE_IDS = [f"device_{i:03d}" for i in range(1, 21)]
 
 
 def delivery_report(err, msg):
+    """
+    Функция, которая вызывается после попытки отправить сообщение в Kafka
+    и показывает, успешно ли сообщение было доставлено
+    """
+    
     if err is not None:
         print(f"Message delivery failed: {err}")
     else:
@@ -24,6 +43,10 @@ def delivery_report(err, msg):
 
 
 def generate_event():
+    """
+    Функция для генерации одного случайного IoT-события
+    """
+    
     device_type_id = random.choice(DEVICE_TYPES)
 
     return {
@@ -36,6 +59,10 @@ def generate_event():
 
 
 def main():
+    """
+    Основной цикл генератора.
+    Producer отправляет по одному событию в Kafka каждую секунду
+    """
     producer = Producer(
         {
             "bootstrap.servers": KAFKA_BOOTSTRAP_SERVERS,
@@ -44,7 +71,6 @@ def main():
     )
 
     print(f"Sending IoT events to Kafka topic: {TOPIC_NAME}")
-    print("Press Ctrl+C to stop.")
 
     try:
         while True:
@@ -63,7 +89,7 @@ def main():
             time.sleep(1)
 
     except KeyboardInterrupt:
-        print("\nStopping generator...")
+        pass
 
     finally:
         producer.flush()
