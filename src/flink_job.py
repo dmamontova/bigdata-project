@@ -1,3 +1,21 @@
+"""
+Скрипт для обработки IoT-событий.
+
+Что делает скрипт:
+1. Читает сырые события от IoT-устройств из Kafka топик `iot_events`.
+2. Загружает справочник типов устройств из PostgreSQL.
+3. Обогащает события названием типа устройства.
+4. Использует event time и watermarks для корректной работы с временем события.
+5. Считает агрегаты:
+   - среднюю температуру;
+   - медиану влажности.
+6. Переводит результат из DataStream в Table.
+7. Записывает итоговые агрегаты в Kafka топик `iot_aggregates`
+   через SQL/Table API.
+"""
+
+
+
 import glob
 import json
 import os
@@ -16,10 +34,10 @@ from pyflink.table import StreamTableEnvironment, Schema, DataTypes
 
 
 KAFKA_BOOTSTRAP_SERVERS = "localhost:9092"
-INPUT_TOPIC = "iot_events" #входной потом с событиями от IoT-устройств
-OUTPUT_TOPIC = "iot_aggregates" #итоговые агрегаты по минутным окнам
+INPUT_TOPIC = "iot_events" #Входной потом с событиями от IoT-устройств
+OUTPUT_TOPIC = "iot_aggregates" #Итоговые агрегаты по минутным окнам
 
-#здесь просто параметры для подключения к PostgresSQL
+#Здесь просто параметры для подключения к PostgresSQL
 POSTGRES_HOST = "localhost"
 POSTGRES_PORT = 5432
 POSTGRES_DB = "iot_db"
